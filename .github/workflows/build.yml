@@ -1,0 +1,88 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  engine:
+    name: Движок LÖVE Potion для Switch
+    runs-on: ubuntu-latest
+    container:
+      image: docker://devkitpro/devkita64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: lovebrew/lovepotion
+          ref: 906511d4e05b47015da5bf85ad554fe6542b1c81
+
+      - name: Сборка
+        run: catnip -T Switch -DLIBRARY_LOADER='linktime' -DUSE_CURL_BACKEND=ON
+
+      - name: Найти lovepotion.nro
+        run: |
+          mkdir -p out
+          NRO=$(find build -name 'lovepotion.nro' | head -n1)
+          test -n "$NRO"
+          cp "$NRO" out/lovepotion.nro
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine
+          path: out/lovepotion.nro
+
+  apk:
+    name: APK
+    needs: engine
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Найти и распаковать проект
+        run: |
+          echo "=== Файлы в репозитории ==="
+          find . -not -path './.git/*' -not -path './.github/*' | head -60
+          find . -name '*.zip' -not -path './.git/*' | while read -r z; do
+            echo "Распаковываю: $z"
+            unzip -o "$z" -d "$(dirname "$z")"
+          done
+          S=$(find . -name settings.gradle.kts -not -path './.git/*' | head -n1)
+          echo "settings.gradle.kts: $S"
+          if [ -z "$S" ]; then
+            echo "::error::Проект не найден. Загрузите project.zip в корень репозитория."
+            exit 1
+          fi
+          D=$(dirname "$S")
+          echo "PROJECT_DIR=$D" >> "$GITHUB_ENV"
+          rm -f "$D"/app/src/main/java/com/nromaker/*.kt
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine
+          path: ${{ env.PROJECT_DIR }}/app/src/main/assets
+
+      - name: Проверить движок
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: ls -l app/src/main/assets && test -s app/src/main/assets/lovepotion.nro
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Принять лицензии Android SDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Сборка
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NroMaker-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
